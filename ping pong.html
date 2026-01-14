@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pong Game - No Login Required!</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const TableTennisGame = () => {
+            const canvasRef = useRef(null);
+            const [gameState, setGameState] = useState('menu');
+            const [difficulty, setDifficulty] = useState('medium');
+            const [winner, setWinner] = useState(null);
+            const [soundEnabled, setSoundEnabled] = useState(true);
+            const [confetti, setConfetti] = useState([]);
+            
+            const gameLoopRef = useRef(null);
+            const confettiAnimationRef = useRef(null);
+            
+            const gameDataRef = useRef({
+                ball: { x: 225, y: 400, vx: 0, vy: 5, radius: 10, speed: 5 },
+                paddle1: { x: 165, y: 50, width: 120, height: 20, speed: 12 },
+                paddle2: { x: 165, y: 730, width: 120, height: 20, speed: 12 },
+                keys: {},
+                touches: {},
+                aiEnabled: true,
+                lastHit: null,
+                ballTrail: [],
+                particles: [],
+                isResetting: false,
+                currentScore: { player1: 0, player2: 0 }
+            });
+
+            const audioContextRef = useRef(null);
+
+            const playSound = (freq, dur, type = 'sine', vol = 0.15) => {
+                if (!soundEnabled) return;
+                try {
+                    if (!audioContextRef.current) {
+                        audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+                    const ctx = audioContextRef.current;
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.frequency.value = freq;
+                    osc.type = type;
+                    gain.gain.setValueAtTime(vol, ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + dur);
+                    osc.start(ctx.currentTime);
+                    osc.stop(ctx.currentTime + dur);
+                } catch (e) {}
+            };
+
+            const playHit = () => { if (!soundEnabled) return; playSound(800, 0.05, 'sine', 0.12); };
+            const playWall = () => { if (!soundEnabled) return; playSound(400, 0.08, 'sine', 0.1); };
+            const playScoreSound = () => { if (!soundEnabled) return; playSound(300, 0.12, 'sine', 0.15); };
+            const playWin = () => { if (!soundEnabled) return; [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => playSound(f, 0.25, 'sine', 0.2), i * 120)); };
+
+            const createConfetti = () => {
+                const colors = ['#FFD700', '#FFA500', '#FF6B9D', '#4ECDC4', '#45B7D1', '#F7DC6F', '#FF69B4', '#00D9FF'];
+                const conf = [];
+                for (let i = 0; i < 200; i++) {
+                    conf.push({
+                        x: Math.random() * 450,
+                        y: -50 - Math.random() * 200,
+                        vx: (Math.random() - 0.5) * 6,
+                        vy: Math.random() * 4 + 3,
+                        color: colors[Math.floor(Math.random() * colors.length)],
+                        size: Math.random() * 10 + 5,
+                        rotation: Math.random() * 360,
+                        rotationSpeed: (Math.random() - 0.5) * 15,
+                        shape: Math.random() > 0.5 ? 'square' : 'circle'
+                    });
+                }
+                setConfetti(conf);
+            };
+
+            const animateConfetti = () => {
+                setConfetti(prev => {
+                    const updated = prev.map(c => ({
+                        ...c,
+                        x: c.x + c.vx,
+                        y: c.y + c.vy,
+                        rotation: c.rotation + c.rotationSpeed,
+                        vy: c.vy + 0.25,
+                        vx: c.vx * 0.99
+                    })).filter(c => c.y < 900);
+                    if (updated.length > 0) confettiAnimationRef.current = requestAnimationFrame(animateConfetti);
+                    return updated;
+                });
+            };
+
+            useEffect(() => {
+                if (confetti.length > 0) confettiAnimationRef.current = requestAnimationFrame(animateConfetti);
+                return () => { if (confettiAnimationRef.current) cancelAnimationFrame(confettiAnimationRef.current); };
+            }, [confetti.length > 0]);
+
+            useEffect(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const data = gameDataRef.current;
+
+                const handleKeyDown = (e) => { data.keys[e.key] = true; if (e.key === 'Escape' && gameState === 'playing') setGameState('paused'); };
+                const handleKeyUp = (e) => { data.keys[e.key] = false; };
+                const handleTouchStart = (e) => {
+                    e.preventDefault();
+                    if (!audioContextRef.current && soundEnabled) audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                    const rect = canvas.getBoundingClientRect();
+                    Array.from(e.touches).forEach(t => {
+                        data.touches[t.identifier] = { x: (t.clientX - rect.left) * (450 / rect.width), y: (t.clientY - rect.top) * (800 / rect.height) };
+                    });
+                };
+                const handleTouchMove = (e) => {
+                    e.preventDefault();
+                    const rect = canvas.getBoundingClientRect();
+                    Array.from(e.touches).forEach(t => {
+                        data.touches[t.identifier] = { x: (t.clientX - rect.left) * (450 / rect.width), y: (t.clientY - rect.top) * (800 / rect.height) };
+                    });
+                };
+                const handleTouchEnd = (e) => { e.preventDefault(); Array.from(e.changedTouches).forEach(t => delete data.touches[t.identifier]); };
+
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+                canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+                canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+                canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+
+                return () => {
+                    window.removeEventListener('keydown', handleKeyDown);
+                    window.removeEventListener('keyup', handleKeyUp);
+                    canvas.removeEventListener('touchstart', handleTouchStart);
+                    canvas.removeEventListener('touchmove', handleTouchMove);
+                    canvas.removeEventListener('touchend', handleTouchEnd);
+                    if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current);
+                };
+            }, [gameState, soundEnabled]);
+
+            const resetBall = (towardPlayer2 = true) => {
+                const data = gameDataRef.current;
+                data.isResetting = true;
+                
+                setTimeout(() => {
+                    data.ball.x = 225;
+                    data.ball.y = 400;
+                    const angle = (Math.random() - 0.5) * Math.PI / 6;
+                    const speed = 5;
+                    data.ball.vx = speed * Math.sin(angle);
+                    data.ball.vy = speed * Math.cos(angle) * (towardPlayer2 ? 1 : -1);
+                    data.lastHit = null;
+                    data.ballTrail = [];
+                    data.isResetting = false;
+                }, 800);
+            };
+
+            const createHitParticles = (x, y, color) => {
+                const data = gameDataRef.current;
+                for (let i = 0; i < 8; i++) {
+                    const angle = (Math.PI * 2 * i) / 8;
+                    data.particles.push({ x, y, vx: Math.cos(angle) * 3, vy: Math.sin(angle) * 3, life: 1, color });
+                }
+            };
+
+            const updatePaddles = () => {
+                const data = gameDataRef.current;
+
+                Object.values(data.touches).forEach(t => {
+                    if (t.y > 400) {
+                        const targetX = t.x - 60;
+                        const diff = targetX - data.paddle2.x;
+                        data.paddle2.x += diff * 0.3;
+                        data.paddle2.x = Math.max(0, Math.min(330, data.paddle2.x));
+                    } else if (!data.aiEnabled) {
+                        const targetX = t.x - 60;
+                        const diff = targetX - data.paddle1.x;
+                        data.paddle1.x += diff * 0.3;
+                        data.paddle1.x = Math.max(0, Math.min(330, data.paddle1.x));
+                    }
+                });
+
+                if (data.keys['ArrowLeft'] || data.keys['a'] || data.keys['A']) data.paddle2.x = Math.max(0, data.paddle2.x - 12);
+                if (data.keys['ArrowRight'] || data.keys['d'] || data.keys['D']) data.paddle2.x = Math.min(330, data.paddle2.x + 12);
+
+                if (data.aiEnabled) {
+                    const aiSpeed = difficulty === 'easy' ? 5 : difficulty === 'medium' ? 7 : 9;
+                    const center = data.paddle1.x + 60;
+                    const target = data.ball.x + data.ball.vx * 15;
+                    if (data.ball.vy < 0 && data.ball.y < 500) {
+                        if (center < target - 25) data.paddle1.x = Math.min(330, data.paddle1.x + aiSpeed);
+                        else if (center > target + 25) data.paddle1.x = Math.max(0, data.paddle1.x - aiSpeed);
+                    }
+                }
+            };
+
+            const updateBall = () => {
+                const data = gameDataRef.current;
+                
+                if (data.isResetting) return;
+
+                data.ballTrail.push({ x: data.ball.x, y: data.ball.y });
+                if (data.ballTrail.length > 10) data.ballTrail.shift();
+                data.particles = data.particles.map(p => ({ ...p, x: p.x + p.vx, y: p.y + p.vy, life: p.life - 0.02 })).filter(p => p.life > 0);
+                
+                data.ball.x += data.ball.vx;
+                data.ball.y += data.ball.vy;
+
+                if (data.ball.x < 10 || data.ball.x > 440) {
+                    data.ball.vx *= -1;
+                    data.ball.x = Math.max(10, Math.min(440, data.ball.x));
+                    playWall();
+                    createHitParticles(data.ball.x, data.ball.y, '#FFD700');
+                }
+
+                if (data.ball.y - 10 <= 70 && data.ball.y - 10 > 50 && data.ball.x >= data.paddle1.x && data.ball.x <= data.paddle1.x + 120 && data.lastHit !== 'p1') {
+                    const hitPos = (data.ball.x - data.paddle1.x - 60) / 60;
+                    data.ball.vy = Math.abs(data.ball.vy) * 1.06;
+                    data.ball.vx += hitPos * 3;
+                    data.ball.y = 70;
+                    data.lastHit = 'p1';
+                    playHit();
+                    createHitParticles(data.ball.x, data.ball.y, '#FFA502');
+                }
+
+                if (data.ball.y + 10 >= 730 && data.ball.y + 10 < 750 && data.ball.x >= data.paddle2.x && data.ball.x <= data.paddle2.x + 120 && data.lastHit !== 'p2') {
+                    const hitPos = (data.ball.x - data.paddle2.x - 60) / 60;
+                    data.ball.vy = -Math.abs(data.ball.vy) * 1.06;
+                    data.ball.vx += hitPos * 3;
+                    data.ball.y = 730;
+                    data.lastHit = 'p2';
+                    playHit();
+                    createHitParticles(data.ball.x, data.ball.y, '#00D9FF');
+                }
+
+                if (data.ball.y < -20 && !data.isResetting) {
+                    data.isResetting = true;
+                    playScoreSound();
+                    data.currentScore.player2++;
+                    
+                    if (data.currentScore.player2 >= 15) {
+                        setTimeout(() => {
+                            setWinner('player2');
+                            setGameState('gameover');
+                            playWin();
+                            createConfetti();
+                        }, 100);
+                    } else {
+                        resetBall(true);
+                    }
+                } else if (data.ball.y > 820 && !data.isResetting) {
+                    data.isResetting = true;
+                    playScoreSound();
+                    data.currentScore.player1++;
+                    
+                    if (data.currentScore.player1 >= 15) {
+                        setTimeout(() => {
+                            setWinner('player1');
+                            setGameState('gameover');
+                            playWin();
+                            createConfetti();
+                        }, 100);
+                    } else {
+                        resetBall(false);
+                    }
+                }
+            };
+
+            const draw = () => {
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d');
+                const data = gameDataRef.current;
+
+                const bg = ctx.createLinearGradient(0, 0, 0, 800);
+                bg.addColorStop(0, '#0a0e27');
+                bg.addColorStop(0.5, '#1a1f3a');
+                bg.addColorStop(1, '#0a0e27');
+                ctx.fillStyle = bg;
+                ctx.fillRect(0, 0, 450, 800);
+
+                ctx.strokeStyle = 'rgba(100, 150, 255, 0.15)';
+                ctx.lineWidth = 3;
+                ctx.setLineDash([20, 20]);
+                ctx.beginPath();
+                ctx.moveTo(0, 400);
+                ctx.lineTo(450, 400);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                data.ballTrail.forEach((p, i) => {
+                    ctx.fillStyle = `rgba(255, 107, 157, ${i / 10 * 0.5})`;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+
+                data.particles.forEach(p => {
+                    ctx.globalAlpha = p.life;
+                    ctx.fillStyle = p.color;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+                ctx.globalAlpha = 1;
+
+                if (!data.isResetting) {
+                    const ballG = ctx.createRadialGradient(data.ball.x - 3, data.ball.y - 3, 0, data.ball.x, data.ball.y, 10);
+                    ballG.addColorStop(0, '#FFFFFF');
+                    ballG.addColorStop(0.3, '#FF6B9D');
+                    ballG.addColorStop(1, '#C44569');
+                    ctx.fillStyle = ballG;
+                    ctx.shadowBlur = 25;
+                    ctx.shadowColor = '#FF6B9D';
+                    ctx.beginPath();
+                    ctx.arc(data.ball.x, data.ball.y, 10, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.shadowBlur = 0;
+                }
+
+                const p1G = ctx.createLinearGradient(data.paddle1.x, 0, data.paddle1.x + 120, 0);
+                p1G.addColorStop(0, '#FF8C00');
+                p1G.addColorStop(0.5, '#FFA502');
+                p1G.addColorStop(1, '#FF8C00');
+                ctx.fillStyle = p1G;
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = '#FFA502';
+                ctx.fillRect(data.paddle1.x, 50, 120, 20);
+
+                const p2G = ctx.createLinearGradient(data.paddle2.x, 0, data.paddle2.x + 120, 0);
+                p2G.addColorStop(0, '#00B4D8');
+                p2G.addColorStop(0.5, '#00D9FF');
+                p2G.addColorStop(1, '#00B4D8');
+                ctx.fillStyle = p2G;
+                ctx.shadowColor = '#00D9FF';
+                ctx.fillRect(data.paddle2.x, 730, 120, 20);
+                ctx.shadowBlur = 0;
+
+                ctx.font = 'bold 56px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#FFA502';
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = '#FFA502';
+                ctx.fillText(data.currentScore.player1, 225, 140);
+                ctx.fillStyle = '#00D9FF';
+                ctx.shadowColor = '#00D9FF';
+                ctx.fillText(data.currentScore.player2, 225, 680);
+                ctx.shadowBlur = 0;
+
+                confetti.forEach(c => {
+                    ctx.save();
+                    ctx.translate(c.x, c.y);
+                    ctx.rotate(c.rotation * Math.PI / 180);
+                    ctx.fillStyle = c.color;
+                    if (c.shape === 'circle') {
+                        ctx.beginPath();
+                        ctx.arc(0, 0, c.size / 2, 0, Math.PI * 2);
+                        ctx.fill();
+                    } else ctx.fillRect(-c.size / 2, -c.size / 2, c.size, c.size);
+                    ctx.restore();
+                });
+            };
+
+            const gameLoop = () => {
+                if (gameState === 'playing') {
+                    updatePaddles();
+                    updateBall();
+                    draw();
+                    gameLoopRef.current = requestAnimationFrame(gameLoop);
+                }
+            };
+
+            const startGame = (ai = true) => {
+                gameDataRef.current.aiEnabled = ai;
+                gameDataRef.current.isResetting = false;
+                gameDataRef.current.currentScore = { player1: 0, player2: 0 };
+                setWinner(null);
+                setConfetti([]);
+                resetBall();
+                setGameState('playing');
+            };
+
+            useEffect(() => {
+                if (gameState === 'playing') gameLoop();
+                return () => { if (gameLoopRef.current) cancelAnimationFrame(gameLoopRef.current); };
+            }, [gameState]);
+
+            const msgs = ["Maybe next time! 😅", "Better luck! 🎯", "Ouch! That hurt! 🤕", "Practice time! 💪", "So close! 😬", "Don't give up! 🎮"];
+            const loserMsg = msgs[Math.floor(Math.random() * msgs.length)];
+            const getWinnerText = () => {
+                if (winner === 'player2') return '🎉 YOU WIN!';
+                if (winner === 'player1') return '😔 YOU LOST!';
+                return '';
+            };
+
+            return React.createElement('div', { className: 'flex items-center justify-center min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4' },
+                React.createElement('div', { className: 'relative' },
+                    React.createElement('canvas', { 
+                        ref: canvasRef, 
+                        width: 450, 
+                        height: 800, 
+                        className: 'border-4 border-purple-500 rounded-3xl shadow-2xl max-w-full h-auto',
+                        style: { touchAction: 'none' }
+                    }),
+                    gameState === 'menu' && React.createElement('div', { className: 'absolute inset-0 flex items-center justify-center bg-black bg-opacity-95 rounded-3xl' },
+                        React.createElement('div', { className: 'bg-gradient-to-br from-slate-800 to-slate-900 p-8 rounded-2xl shadow-2xl w-11/12 max-w-sm border-2 border-purple-500' },
+                            React.createElement('div', { className: 'text-center mb-8' },
+                                React.createElement('h1', { className: 'text-6xl font-black mb-2 bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 bg-clip-text text-transparent' }, 'PONG'),
+                                React.createElement('p', { className: 'text-purple-300 text-sm' }, 'First to 15 wins!'),
+                                React.createElement('p', { className: 'text-cyan-400 text-xs mt-2' }, '✨ Local 2-Player Mode')
+                            ),
+                            React.createElement('div', { className: 'mb-6' },
+                                React.createElement('label', { className: 'text-white block mb-3 font-bold text-sm' }, 'AI DIFFICULTY'),
+                                React.createElement('select', { 
+                                    value: difficulty, 
+                                    onChange: (e) => setDifficulty(e.target.value),
+                                    className: 'w-full px-4 py-4 rounded-xl bg-slate-700 text-white border-2 border-purple-500 font-semibold text-lg'
+                                },
+                                    React.createElement('option', { value: 'easy' }, '😊 EASY'),
+                                    React.createElement('option', { value: 'medium' }, '😎 MEDIUM'),
+                                    React.createElement('option', { value: 'hard' }, '😈 HARD')
+                                )
+                            ),
+                            React.createElement('button', { 
+                                onClick: () => startGame(true),
+                                className: 'w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white font-black py-5 rounded-xl mb-3 transition-all transform hover:scale-105 shadow-lg text-lg'
+                            }, '🤖 VS AI'),
+                            React.createElement('button', { 
+                                onClick: () => startGame(false),
+                                className: 'w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-black py-5 rounded-xl mb-3 transition-all transform hover:scale-105 shadow-lg text-lg'
+                            }, '👥 2 PLAYER'),
+                            React.createElement('button', { 
+                                onClick: () => setSoundEnabled(!soundEnabled),
+                                className: 'w-full mt-4 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2'
+                            },
+                                React.createElement('span', null, soundEnabled ? '🔊 SOUND ON' : '🔇 SOUND OFF')
+                            ),
+                            React.createElement('div', { className: 'mt-6 text-center text-slate-400 text-sm space-y-1' },
+                                React.createElement('p', null, '👆 Touch or Arrow keys'),
+                                React.createElement('p', null, '2P: Top & Bottom halves')
+                            )
+                        )
+                    ),
+                    gameState === 'paused' && React.createElement('div', { className: 'absolute inset-0 flex items-center justify-center bg-black bg-opacity-95 rounded-3xl' },
+                        React.createElement('div', { className: 'bg-slate-800 p-8 rounded-2xl shadow-2xl border-2 border-purple-500' },
+                            React.createElement('h2', { className: 'text-5xl font-black text-white mb-8 text-center' }, '⏸️ PAUSED'),
+                            React.createElement('button', { 
+                                onClick: () => setGameState('playing'),
+                                className: 'bg-gradient-to-r from-green-500 to-emerald-600 text-white font-black py-4 px-10 rounded-xl mb-4 shadow-lg text-lg block w-full'
+                            }, 'RESUME'),
+                            React.createElement('button', { 
+                                onClick: () => setGameState('menu'),
+                                className: 'bg-slate-700 text-white font-bold py-4 px-10 rounded-xl block w-full'
+                            }, 'QUIT')
+                        )
+                    ),
+                    gameState === 'gameover' && React.createElement('div', { className: 'absolute inset-0 flex items-center justify-center bg-black bg-opacity-95 rounded-3xl' },
+                        React.createElement('div', { className: 'bg-gradient-to-b from-slate-800 to-slate-900 p-8 rounded-xl shadow-2xl w-11/12 max-w-sm border-2 border-yellow-500' },
+                            React.createElement('div', { className: 'text-6xl text-center mb-4' }, '🏆'),
+                            React.createElement('h2', { className: 'text-4xl font-bold text-white mb-4 text-center' }, getWinnerText()),
+                            React.createElement('div', { className: 'text-3xl font-bold mb-4 text-center' },
+                                React.createElement('span', { className: winner === 'player1' ? 'text-red-400' : 'text-gray-400' }, gameDataRef.current.currentScore.player1),
+                                React.createElement('span', { className: 'text-white mx-3' }, '-'),
+                                React.createElement('span', { className: winner === 'player2' ? 'text-green-400' : 'text-gray-400' }, gameDataRef.current.currentScore.player2)
+                            ),
+                            winner === 'player1' && React.createElement('div', { className: 'bg-red-900 bg-opacity-50 border-2 border-red-500 rounded-lg p-4 mb-6' },
+                                React.createElement('p', { className: 'text-yellow-300 font-bold text-lg mb-1' }, 'Oops!'),
+                                React.createElement('p', { className: 'text-white text-xl' }, loserMsg)
+                            ),
+                            React.createElement('button', { 
+                                onClick: () => startGame(gameDataRef.current.aiEnabled),
+                                className: 'w-full bg-gradient-to-r from-green-500 to-green-600 text-white font-black py-4 rounded-xl mb-3 shadow-lg'
+                            }, '🔄 PLAY AGAIN'),
+                            React.createElement('button', { 
+                                onClick: () => setGameState('menu'),
+                                className: 'w-full bg-gray-600 text-white font-bold py-3 rounded-xl'
+                            }, 'MAIN MENU')
+                        )
+                    )
+                )
+            );
+        };
+
+        ReactDOM.render(React.createElement(TableTennisGame), document.getElementById('root'));
+    </script>
+</body>
+</html>
